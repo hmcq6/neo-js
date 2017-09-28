@@ -55,6 +55,28 @@ module.exports = function(network){
     scripts: [] })
   module.transactions = mongoose.model(collection.transactions, transactionSchema);
 
+  /**
+  {address:,
+  transactions: [
+    {txid: String}
+  ],
+  assets: {
+    $assetID: { value: Number, index: Number},
+    $assetID: { value: Number, index: Number}
+  },
+  tokens: {
+    $assetID: { value: Number, index: Number},
+    $assetID: { value: Number, index: Number}
+  }
+   */
+  var addressSchema = new bSchema({
+    address: {type: 'String', unique : true, required : true, dropDups: true},
+    transactions: [],
+    assets: {},
+    tokens: {}
+  })
+  module.transactions = mongoose.model(collection.addresses, addressSchema);
+
 
   /**
    * @class node
@@ -76,16 +98,13 @@ module.exports = function(network){
     this.getAssetBalance = function(address,asset) {
       return new Promise(function (resolve, reject) {
 
-        if (asset.length > 64){
-          asset = asset_id.slice(2);
-        };
         var balance = 0;
 
         module.transactions.find({
           'vout.address': address,
           $or: [{'type': 'ContractTransaction'}, {'type': 'InvocationTransaction'}],
-          $or:[ {'vout.asset': asset}, {'vout.asset': '0x' + asset}]
-        },'txid').sort('blockIndex')
+          'vout.asset': asset},'txid')
+          .sort('blockIndex')
           .exec(function (err, res) {
             if (err) return reject(err);
 
@@ -172,7 +191,7 @@ module.exports = function(network){
         if (txid.length > 64){
           txid = txid.slice(2);
         };
-        module.transactions.findOne({ $or:[ {'txid': txid}, {'txid': '0x' + txid}] })
+        module.transactions.findOne({'txid': txid})
           .exec(function(err, res){
             if (err) return reject(err);
             if (!res) return reject('transaction not found');
