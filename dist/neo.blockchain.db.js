@@ -9,13 +9,13 @@ module.exports = function(network){
   var collection = {
     'blockchain': 'b_neo_t_blocks', //The blockchain collection
     'transactions': 'b_neo_t_transactions', //the transactions on the blockchains
-    'accounts': 'b_neo_t_accounts', //A collection maintaining accounts and their balances
+    'addresses': 'b_neo_t_addresses', //A collection maintaining accounts and their balances
     'contracts': 'b_neo_t_contracts' //A collection indexing smart contracts
   };
   if (network == 'mainnet'){
     collection.blockchain = 'b_neo_m_blocks';
     collections.transactions = 'b_neo_m_transactions';
-    collection.accounts = 'b_neo_m_accounts';
+    collection.addresses = 'b_neo_m_addresses';
     collection.contracts = 'b_neo_m_contracts';
   }
 
@@ -61,21 +61,21 @@ module.exports = function(network){
     {txid: String}
   ],
   assets: {
-    $assetID: { value: Number, index: Number},
-    $assetID: { value: Number, index: Number}
+    $asset: {value: Number, index: Number},
+    $asset: {value: Number, index: Number}
   },
   tokens: {
-    $assetID: { value: Number, index: Number},
-    $assetID: { value: Number, index: Number}
+    $assetID: {value: Number, index: Number},
+    $assetID: {value: Number, index: Number}
   }
    */
   var addressSchema = new bSchema({
     address: {type: 'String', unique : true, required : true, dropDups: true},
     transactions: [],
-    assets: {},
-    tokens: {}
+    assets: [],
+    tokens: []
   })
-  module.transactions = mongoose.model(collection.addresses, addressSchema);
+  module.addresses = mongoose.model(collection.addresses, addressSchema);
 
 
   /**
@@ -92,42 +92,88 @@ module.exports = function(network){
     this.index = -1;
     this.connections = 0;
     this.pendingRequests = 0;
+    this.cacheAge = 5; //sets the acceptable age of asset values when resolving a request (in blocks)
     this.unlinkedBlocks = [];
     var node = this;
 
     this.getAssetBalance = function(address,asset) {
       return new Promise(function (resolve, reject) {
 
-        var balance = 0;
+        //look for 'good' cached data first.
+        module.addresses.findOne({
+          'address': address,
+          'assets': { '$elemMatch': { 'asset': asset, 'blockHeight': {'$gte': (node.blockHeight - node.cacheAge) } } }
+        })
+          .exec(function(err,res){
+            if (res) return resolve(_.filter(res.assets, function(a){return a.asset == asset})[0]);
 
-        module.transactions.find({
-          'vout.address': address,
-          $or: [{'type': 'ContractTransaction'}, {'type': 'InvocationTransaction'}],
-          'vout.asset': asset},'txid')
-          .sort('blockIndex')
-          .exec(function (err, res) {
-            if (err) return reject(err);
+            //run the update event if the value is stale
+            var balance = 0;
+            module.transactions.find({
+              'vout.address': address,
+              $or: [{'type': 'ContractTransaction'}, {'type': 'InvocationTransaction'}],
+              'vout.asset': asset},'txid')
+              .sort('blockIndex')
+              .exec(function (err, res) {
+                if (err) return reject(err);
+                Promise.all(_.map(res, 'txid').map(node.getSimplifiedTX))
+                  .then(function(res) {
+                    res.forEach(function (r) {
+                      r.forEach(function (simpleTX) {
+                        if ((simpleTX.address == address) &&
+                          ((simpleTX.asset == asset) || (simpleTX.asset.slice(2) == asset))) {
+                          balance += simpleTX.value;
+                        }
+                      })
+                    })
 
-            Promise.all(_.map(res, 'txid').map(node.getSimplifiedTX))
-              .then(function(res){
-                res.forEach(function(r){
-                  r.forEach(function(simpleTX){
-                    if ((simpleTX.address == address) &&
-                      ((simpleTX.asset == asset) || (simpleTX.asset.slice(2) == asset))){
-                      balance += simpleTX.value;
-                    }
+                    module.addresses.update(
+                      {
+                        'address': address,
+                        'assets.asset': asset
+                      },
+                      {
+                        '$set': {
+                          'assets.$.balance': balance,
+                          'assets.$.blockHeight': node.blockHeight
+                        }
+                      },
+                      function (err, numAffected) {
+
+                       //If the asset or address isnt available, add it.
+                       if (numAffected.n == 0) {
+                         console.log('upserting');
+                         module.addresses.update(
+                           {
+                             'address': address
+                           },
+                           {
+                             '$push': {
+                               'assets': {
+                                 'asset': asset,
+                                 'balance': balance,
+                                 'blockHeight': node.blockHeight
+                               }
+                             }
+                           },
+                           {'upsert': true},
+                           function(err,res){});
+                       }
+                       resolve({
+                          'asset': asset,
+                          'balance': balance
+                        });
+                      }
+                    )
                   })
-                })
-                resolve({
-                  'asset': asset,
-                  'balance': balance
-                });
-              })
-              .catch(function(err){
-                console.log(err);
+                  .catch(function(err){
+                    console.log(err);
+                  })
+
               })
 
-            })
+          })
+
       })
     }
 
@@ -188,9 +234,6 @@ module.exports = function(network){
 
     this.getTX = function(txid){
       return new Promise(function(resolve, reject){
-        if (txid.length > 64){
-          txid = txid.slice(2);
-        };
         module.transactions.findOne({'txid': txid})
           .exec(function(err, res){
             if (err) return reject(err);

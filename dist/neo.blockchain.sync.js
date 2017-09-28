@@ -78,19 +78,20 @@ function sync(blockchain) {
     sync.runLock = true;
 
     console.log('Synchronizing');
+
+    //checks for a new block
     sync.clock = setInterval(function () {
       if (sync.runLock) {
         if ((blockchain.localNode.index < blockchain.highestNode().index) &&
           (queue.length() == 0)) {
           blockWritePointer = blockchain.localNode.index;
-          console.log(blockWritePointer);
           sync.enqueueBlock(blockWritePointer + 1, true);
         }
       }
       else clearInterval(sync.clock);
     }, 2000)
 
-
+    //runs a blockchain verification
     sync.clock2 = setInterval(function () {
       if (sync.runLock) {
         blockchain.localNode.verifyBlocks()
